@@ -1,5 +1,156 @@
 ﻿@page "/"
 
+@using Web.Components.Models
+@using PdfUtils
+
+@inject IJSRuntime JS
+
 <PageTitle>Binder</PageTitle>
 
 <h1>PDF Binder</h1>
+
+<MudStack Style="width: 100%">
+  <MudFileUpload T="IReadOnlyList<IBrowserFile>"
+								 @ref="@_fileUpload"
+								 OnFilesChanged="OnInputFileChanged"
+								 AppendMultipleFiles
+								 Hidden="@false"
+								 InputClass="absolute mud-width-full mud-height-full overflow-hidden z-10"
+								 InputStyle="opacity:0"
+								 tabindex="-1"
+								 @ondrop="@ClearDragClass"
+								 @ondragenter="@SetDragClass"
+								 @ondragleave="@ClearDragClass"
+								 @ondragend="@ClearDragClass">
+    <ActivatorContent>
+      <MudPaper Height="300px"
+								Outlined="true"
+								Class="@_dragClass">
+        <MudText Typo="Typo.h6">
+          Drag and drop files here or click
+        </MudText>
+        @foreach (var file in _files)
+        {
+          <MudChip T="string"
+									 Color="Color.Dark"
+									 Text="@file.Name"
+									 tabindex="-1" />
+        }
+      </MudPaper>
+    </ActivatorContent>
+  </MudFileUpload>
+  <MudToolBar Gutters="@false"
+              Class="relative d-flex justify-end gap-4">
+    <MudButton Color="Color.Primary"
+							 OnClick="@OpenFilePickerAsync"
+							 Variant="Variant.Filled">
+      Open file picker
+    </MudButton>
+    <MudButton Color="Color.Primary"
+							 Disabled="@(!_files.Any())"
+							 OnClick="@Bind"
+							 Variant="Variant.Filled">
+      Bind
+    </MudButton>
+    <MudButton Color="Color.Error"
+							 Disabled="@(!_files.Any())"
+							 OnClick="@ClearAsync"
+							 Variant="Variant.Filled">
+      Clear
+    </MudButton>
+  </MudToolBar>
+</MudStack>
+
+<script>
+  window.downloadFileFromStream = async (fileName, contentStreamReference) => {
+  const arrayBuffer = await contentStreamReference.arrayBuffer();
+  const blob = new Blob([arrayBuffer]);
+  const url = URL.createObjectURL(blob);
+  const anchorElement = document.createElement('a');
+  anchorElement.href = url;
+  anchorElement.download = fileName ?? '';
+  anchorElement.click();
+  anchorElement.remove();
+  URL.revokeObjectURL(url);
+  }
+</script>
+
+@code {
+  private const string DefaultDragClass = "relative rounded-lg border-2 border-dashed pa-4 mt-4 mud-width-full mud-height-full";
+  private string _dragClass = DefaultDragClass;
+  private readonly List<FileModel> _files = new();
+  private MudFileUpload<IReadOnlyList<IBrowserFile>>? _fileUpload;
+
+  private async Task ClearAsync()
+  {
+    await (_fileUpload?.ClearAsync() ?? Task.CompletedTask);
+    _files.Clear();
+    ClearDragClass();
+  }
+
+  private Task OpenFilePickerAsync()
+      => _fileUpload?.OpenFilePickerAsync() ?? Task.CompletedTask;
+
+  private async Task OnInputFileChanged(InputFileChangeEventArgs e)
+  {
+    ClearDragClass();
+
+    var files = e.GetMultipleFiles();
+    foreach (var file in files)
+    {
+      if (file.Name.EndsWith(".pdf"))
+      {
+        var bytes = await GetBytes(file);
+        _files.Add(new FileModel 
+											 { Name = file.Name,
+												 Content = bytes
+											 });
+      }
+    }
+  }
+
+  private async Task Bind()
+  {
+    List<byte[]> filesBytes = new();
+    foreach (var file in _files)
+    {
+      if (file != null && file.Content != null)
+        filesBytes.Add(file.Content);
+    }
+    var bindedFile = PdfBinder.BindPdfBytes(filesBytes);
+    var bindedStream = new MemoryStream(bindedFile);
+    var fileName = "binded.pdf";
+    using var streamRef = new DotNetStreamReference(stream: bindedStream);
+    await JS.InvokeVoidAsync("downloadFileFromStream",
+                             fileName,
+                             streamRef);
+  }
+
+  private void SetDragClass()
+      => _dragClass = $"{DefaultDragClass} mud-border-primary";
+
+  private void ClearDragClass()
+      => _dragClass = DefaultDragClass;
+
+  private async Task<byte[]> GetBytes(IBrowserFile file)
+  {
+    var path = Path.Combine(Path.GetTempPath(),
+                            Guid.NewGuid().ToString());
+	  await using var fs = new FileStream(path, FileMode.Create);
+
+		await file.OpenReadStream(file.Size).CopyToAsync(fs);
+
+		var bytes = new byte[file.Size];
+
+		fs.Position = 0;
+
+		await fs.ReadAsync(bytes);            
+
+		fs.Close();
+
+		File.Delete(path);
+    
+    return bytes;
+  }
+}
+
